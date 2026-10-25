@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Desktop Runner</title>
+<style>
+  :root { --bg:#0e1015; --bar:#171a21; --card:#20242e; --line:#2c3240; --fg:#eceff6; --dim:#8a93a6; --acc:#4f8cff; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; overflow:hidden; }
+  body { display:flex; flex-direction:column; }
+  #bar { flex:none; height:56px; padding:0 10px; display:flex; align-items:center; gap:8px; background:var(--bar); border-bottom:1px solid var(--line); }
+  #bar.hidden { display:none; }
+  .btn { position:relative; background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:10px; height:38px; padding:0 14px; font-size:14px; display:inline-flex; align-items:center; justify-content:center; touch-action:manipulation; user-select:none; font-family:inherit; }
+  .primary { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600; }
+  select.btn { padding:0 6px; }
+  #status { flex:1; min-width:0; font-size:12px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .filein { position:absolute; inset:0; width:100%; height:100%; opacity:0; font-size:0; cursor:pointer; }
+  #main { flex:1; min-height:0; position:relative; }
+  #home { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:24px; text-align:center; }
+  #home h1 { font-size:22px; margin:0; }
+  #home p { margin:0; color:var(--dim); font-size:14px; max-width:320px; line-height:1.5; }
+  #home .btn { height:48px; padding:0 28px; font-size:16px; border-radius:14px; }
+  #stage { position:absolute; inset:0; background:#fff; overflow:hidden; display:none; }
+  #frame { position:absolute; top:0; left:0; border:0; background:#fff; transform-origin:0 0; }
+  #busy { position:absolute; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column; gap:12px; background:rgba(14,16,21,.88); z-index:4; font-size:14px; }
+  .spin { width:34px; height:34px; border:3px solid var(--line); border-top-color:var(--acc); border-radius:50%; animation:sp .8s linear infinite; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+  #fab { position:fixed; right:10px; bottom:10px; z-index:6; opacity:.6; height:34px; padding:0 12px; font-size:12px; }
+  #toast { position:fixed; left:50%; bottom:60px; transform:translateX(-50%); background:#2a1d22; border:1px solid #6b2b3a; color:#ffd5dc; padding:10px 14px; border-radius:12px; font-size:13px; display:none; z-index:9; max-width:90%; text-align:center; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <div class="btn primary">Import<input class="filein pick" type="file" accept=".html,.htm,text/html"></div>
+  <button class="btn" id="reload" type="button">Reload</button>
+  <select class="btn" id="width">
+    <option value="1280">1280</option>
+    <option value="1366" selected>1366</option>
+    <option value="1536">1536</option>
+    <option value="1920">1920</option>
+  </select>
+  <button class="btn" id="close" type="button">Close</button>
+  <span id="status">JS loading...</span>
+</div>
+<div id="main">
+  <div id="home">
+    <h1>Desktop Runner</h1>
+    <p>Import dabayein aur apni HTML file select karein. Woh desktop layout mein chalegi.</p>
+    <div class="btn primary">Import HTML<input class="filein pick" type="file" accept=".html,.htm,text/html"></div>
+  </div>
+  <div id="stage"><iframe id="frame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock"></iframe></div>
+  <div id="busy"><div class="spin"></div><div id="busyTxt">Load ho raha hai...</div></div>
+</div>
+<div id="toast"></div>
+<button class="btn" id="fab" type="button">Hide bar</button>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var frame = $('frame'), stage = $('stage'), main = $('main'), bar = $('bar'), home = $('home');
+  var current = '', blobUrl = '', slowTimer = 0, raf = 0;
+
+  function toast(msg) {
+    var t = $('toast'); t.textContent = msg; t.style.display = 'block';
+    clearTimeout(toast._t); toast._t = setTimeout(function () { t.style.display = 'none'; }, 3500);
+  }
+
+  function fit() {
+    var w = parseInt($('width').value, 10) || 1366;
+    var sw = main.clientWidth, sh = main.clientHeight;
+    if (!sw || !sh) return;
+    var scale = sw / w;
+    frame.style.width = w + 'px';
+    frame.style.height = Math.ceil(sh / scale) + 'px';
+    frame.style.transform = 'scale(' + scale + ')';
+  }
+  function schedFit() {
+    if (raf) return;
+    raf = requestAnimationFrame(function () { raf = 0; fit(); });
+  }
+
+  function shimFn() {
+    ['pushState', 'replaceState'].forEach(function (k) {
+      var o = history[k];
+      history[k] = function () { try { return o.apply(this, arguments); } catch (e) {} };
+    });
+    function mk() {
+      var d = {};
+      return {
+        getItem: function (k) { return Object.prototype.hasOwnProperty.call(d, k) ? d[k] : null; },
+        setItem: function (k, v) { d[k] = String(v); },
+        removeItem: function (k) { delete d[k]; },
+        clear: function () { d = {}; },
+        key: function (i) { return Object.keys(d)[i] || null; },
+        get length() { return Object.keys(d).length; }
+      };
+    }
+    ['localStorage', 'sessionStorage'].forEach(function (n) {
+      try { window[n].getItem('x'); }
+      catch (e) { try { Object.defineProperty(window, n, { value: mk(), configurable: true }); } catch (e2) {} }
+    });
+  }
+  function inject(html) {
+    var tag = '<scr' + 'ipt>(' + shimFn.toString() + ')();</scr' + 'ipt>';
+    if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, function (m) { return m + tag; });
+    if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, function (m) { return m + tag; });
+    return tag + html;
+  }
+
+  function busy(on, txt) {
+    $('busy').style.display = on ? 'flex' : 'none';
+    if (txt) $('busyTxt').textContent = txt;
+    clearTimeout(slowTimer);
+    if (on) slowTimer = setTimeout(function () {
+      $('busyTxt').textContent = 'Slow hai. Reload ya Close dabayein.';
+      $('busy').style.pointerEvents = 'none';
+    }, 10000);
+    else $('busy').style.pointerEvents = '';
+  }
+
+  function run() {
+    if (!current) return;
+    try { if (blobUrl) URL.revokeObjectURL(blobUrl); } catch (e) {}
+    busy(true, 'Load ho raha hai...');
+    home.style.display = 'none';
+    stage.style.display = 'block';
+    fit();
+    try {
+      blobUrl = URL.createObjectURL(new Blob([inject(current)], { type: 'text/html' }));
+      frame.src = blobUrl;
+    } catch (e) {
+      frame.srcdoc = inject(current);
+    }
+  }
+
+  frame.addEventListener('load', function () { busy(false); });
+
+  function readFile(f) {
+    return new Promise(function (res, rej) {
+      var r = new FileReader();
+      r.onload = function () { res(String(r.result)); };
+      r.onerror = function () { rej(r.error || new Error('read')); };
+      r.readAsText(f);
+    });
+  }
+
+  function onPick(e) {
+    var inp = e.target, f = inp.files && inp.files[0];
+    if (!f) return;
+    if (!/\.html?$/i.test(f.name) && f.type !== 'text/html') {
+      toast('Sirf HTML file select karein'); inp.value = ''; return;
+    }
+    busy(true, 'File padh raha hoon...');
+    readFile(f).then(function (text) {
+      current = text;
+      $('status').textContent = f.name;
+      run();
+    }).catch(function () {
+      busy(false); toast('File read nahi ho saki');
+    }).then(function () { inp.value = ''; });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.pick'), function (i) { i.addEventListener('change', onPick); });
+
+  $('reload').addEventListener('click', function () { if (current) run(); else toast('Pehle file import karein'); });
+  $('close').addEventListener('click', function () {
+    busy(false);
+    frame.removeAttribute('src'); frame.removeAttribute('srcdoc');
+    try { if (blobUrl) URL.revokeObjectURL(blobUrl); } catch (e) {}
+    blobUrl = ''; current = '';
+    stage.style.display = 'none'; home.style.display = 'flex';
+    $('status').textContent = 'Ready';
+  });
+  $('width').addEventListener('change', fit);
+
+  $('fab').addEventListener('click', function () {
+    var hide = !bar.classList.contains('hidden');
+    bar.classList.toggle('hidden', hide);
+    $('fab').textContent = hide ? 'Show bar' : 'Hide bar';
+    schedFit();
+  });
+
+  if (window.ResizeObserver) new ResizeObserver(schedFit).observe(main);
+  window.addEventListener('resize', schedFit);
+  window.addEventListener('orientationchange', function () { setTimeout(fit, 250); });
+  fit();
+  $('status').textContent = 'Ready';
+})();
+</script>
+</body>
+</html>
